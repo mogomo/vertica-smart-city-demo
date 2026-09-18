@@ -1,0 +1,578 @@
+SET
+Timing is off.
+ VERTICA SMART FLEET DEMO | part 2: from raw IoT events to decisions - in SQL, inside the database 
+
+   ACT 1  The IoT stream ............. time-series SQL: latest state, gap filling, interpolation
+   ACT 2  Where it happens ........... geospatial: geofences, route adherence, black spots
+   ACT 3  Autonomous vs. human ....... safety scorecard, driver coaching, event pattern matching
+   ACT 4  Energy ..................... kWh/km, regeneration, temperature, idling, CO2, money
+   ACT 5  Machine learning ........... driving-style clusters, predictive maintenance, anomalies
+   ACT 6  Emergency response ......... nearest units, hospital routing, green corridor
+   ACT 7  Executive summary
+
+
+ ACT 1 | THE IoT STREAM                                                            
+  iot_events  | vehicles |  from_day  |   to_day   
+--------------+----------+------------+------------
+   13,354,093 |      320 | 2026-08-03 | 2026-09-16
+(1 row)
+
+>>> One raw event, as sent by the vehicle gateway:
+Expanded display is on.
+-[ RECORD 1 ]--+--------------------
+event_id       | 13518720
+vehicle_id     | 1002
+ts             | 2026-09-16 21:59:08
+lat            | 32.083738
+lon            | 34.781328
+speed_kmh      | 22.9
+accel_ms2      | 0.44
+odometer_km    | 79674.4
+power_kw       | 53.7
+fuel_lph       | 
+energy_pct     | 56.0
+motor_temp_c   | 56.9
+batt_temp_c    | 31.9
+vibration_g    | 0.431
+tire_psi       | 112.9
+outside_temp_c | 27.2
+passengers     | 8
+brake_pedal    | 0
+abs_on         | 0
+wipers_on      | 0
+headlamps_on   | 1
+doors_open     | 0
+av_disengage   | 0
+
+Expanded display is off.
+>>> [OPS] Live fleet board: the LATEST state of every vehicle - Vertica Top-K:  LIMIT 1 OVER (PARTITION BY ...)
+Timing is on.
+  plate   | fleet_segment | line | last_seen |    lat    |    lon    | speed_kmh | pax | energy % | battery / tank 
+----------+---------------+------+-----------+-----------+-----------+-----------+-----+----------+----------------
+ TLV-1090 | Human EV      | 40   | 21:59:14  | 32.005695 | 34.867534 |      55.6 |  11 |      8.1 | █░░░░░░░░░
+ TLV-1234 | Human EV      | 40   | 21:59:08  | 32.069037 | 34.790158 |       0.0 |  14 |      9.7 | █░░░░░░░░░
+ TLV-1282 | Human EV      | 40   | 21:59:14  | 32.005953 | 34.867401 |       4.2 |  13 |     12.5 | █░░░░░░░░░
+ TLV-1294 | Human EV      | 40   | 21:59:17  | 32.040109 | 34.811317 |       0.0 |   8 |     14.3 | █░░░░░░░░░
+ TLV-1296 | Human EV      | 90   | 21:59:10  | 32.155774 | 34.807772 |      60.4 |  12 |     16.2 | ██░░░░░░░░
+ TLV-1186 | Human EV      | 40   | 21:59:14  | 32.042496 | 34.806962 |       0.0 |  17 |     19.7 | ██░░░░░░░░
+ TLV-1200 | Human EV      | 90   | 21:59:00  | 32.147776 | 34.807331 |       0.0 |  15 |     20.1 | ██░░░░░░░░
+ TLV-1042 | Human EV      | 40   | 21:59:14  | 32.029426 | 34.850342 |      63.7 |  21 |     21.4 | ██░░░░░░░░
+ TLV-1006 | Human EV      | 40   | 21:59:05  | 32.033308 |  34.82434 |       3.5 |   8 |     21.8 | ██░░░░░░░░
+ TLV-1056 | Human EV      | 90   | 21:59:01  | 32.086482 | 34.797858 |       0.0 |  20 |     22.6 | ██░░░░░░░░
+(10 rows)
+
+Time: First fetch (10 rows): 552.738 ms. All rows formatted: 552.862 ms
+Timing is off.
+>>> [OPS] Sensors are irregular and messages get lost: bus TLV-1001 drove through a tunnel (16:00-16:08, no GPS).
+>>>       Raw events around the gap:
+    ts    |    lat    |    lon    | speed_kmh | energy_pct 
+----------+-----------+-----------+-----------+------------
+ 15:57:14 | 32.062371 | 34.773666 |       0.0 |       71.6
+ 15:58:05 | 32.063723 | 34.772265 |      36.0 |       71.5
+ 15:59:13 | 32.065462 | 34.771817 |       0.0 |       71.4
+ 16:09:01 | 32.083027 | 34.775185 |      15.5 |       71.3
+ 16:10:12 | 32.086433 | 34.775917 |       0.0 |       71.2
+ 16:11:07 | 32.087339 | 34.776062 |      33.6 |       71.0
+(6 rows)
+
+>>>       Same window through the TIMESERIES clause: a perfect 1-minute grid, positions linearly interpolated (TS_FIRST_VALUE ... LINEAR)
+ minute |    lat    |    lon    | speed_kmh | energy_pct |                            
+--------+-----------+-----------+-----------+------------+----------------------------
+ 15:58  |           |           |           |            | 
+ 15:59  | 32.065130 | 34.771903 |       6.9 |       71.4 | 
+ 16:00  | 32.066866 | 34.772086 |       1.2 |       71.4 | <-- no message: gap filled
+ 16:01  | 32.068658 | 34.772430 |       2.8 |       71.4 | <-- no message: gap filled
+ 16:02  | 32.070451 | 34.772774 |       4.4 |       71.4 | <-- no message: gap filled
+ 16:03  | 32.072243 | 34.773117 |       6.0 |       71.4 | <-- no message: gap filled
+ 16:04  | 32.074035 | 34.773461 |       7.6 |       71.4 | <-- no message: gap filled
+ 16:05  | 32.075828 | 34.773805 |       9.1 |       71.3 | <-- no message: gap filled
+ 16:06  | 32.077620 | 34.774148 |      10.7 |       71.3 | <-- no message: gap filled
+ 16:07  | 32.079412 | 34.774492 |      12.3 |       71.3 | <-- no message: gap filled
+ 16:08  | 32.081205 | 34.774836 |      13.9 |       71.3 | <-- no message: gap filled
+ 16:09  | 32.082997 | 34.775179 |      15.5 |       71.3 | 
+ 16:10  | 32.085857 | 34.775793 |       2.6 |       71.2 | 
+ 16:11  | 32.087224 | 34.776044 |      29.3 |       71.0 | 
+(14 rows)
+
+
+ ACT 2 | WHERE IT HAPPENS - GEOSPATIAL ANALYTICS AT IoT SCALE                        
+>>> The map layers: 12 bus lines (LINESTRING), 21 geofences (POLYGON), hospitals / depots / chargers (POINT)
+    zone_type     | zones | limit km/h | area km2 | polygon_vertices 
+------------------+-------+------------+----------+------------------
+ COMPLEX_JUNCTION |     3 |            |     0.58 |               33
+ DEPOT            |     3 |         20 |     0.64 |               33
+ HOSPITAL         |     4 |         40 |     1.34 |               33
+ LOW_EMISSION     |     1 |            |    13.01 |                5
+ SCHOOL           |    10 |         30 |     1.70 |               33
+(5 rows)
+
+>>> Build spatial indexes on the geofences (STV_Create_Index). One for speed-regulated zones, one for all zones.
+   type   | polygons | SRID |   min_x   |   min_y   |   max_x   |   max_y   | info 
+----------+----------+------+-----------+-----------+-----------+-----------+------
+ GEOMETRY |       17 |    0 | 34.757151 | 32.016648 | 34.872757 | 32.117395 | 
+(1 row)
+
+   type   | polygons | SRID |   min_x   |   min_y   |   max_x   |   max_y   | info 
+----------+----------+------+-----------+-----------+-----------+-----------+------
+ GEOMETRY |       21 |    0 | 34.757151 | 32.016648 | 34.872757 | 32.117395 | 
+(1 row)
+
+>>> Geofence EVERY GPS point of the fleet against ALL polygons (STV_Intersect, parallel on all cores):
+CREATE TABLE
+Timing is on.
+ OUTPUT  
+---------
+ 6165562
+(1 row)
+
+Time: First fetch (1 row): 1549.016 ms. All rows formatted: 1549.067 ms
+COMMIT
+Time: First fetch (0 rows): 0.979 ms. All rows formatted: 1.001 ms
+Timing is off.
+ gps_points_tested | polygons | point_in_polygon_hits 
+-------------------+----------+-----------------------
+   13,354,093      |       21 |    6,165,562
+(1 row)
+
+>>> [CITY] School zones, school hours (07:00-17:00), limit 30 km/h: who respects them?
+>>>        Here STV_Intersect is used as an inline scalar function - no join, no pre-processing.
+Timing is on.
+ drive_mode | readings_in_school_zones | over 33 km/h | over 45 km/h | max_kmh | violation_pct |                      
+------------+--------------------------+--------------+--------------+---------+---------------+----------------------
+ AUTONOMOUS |     82,504               |            0 |            0 |    28.0 |          0.00 | 
+ HUMAN      |    165,361               |        33755 |         8737 |    76.0 |         20.41 | ████████████████████
+(2 rows)
+
+Time: First fetch (2 rows): 2259.656 ms. All rows formatted: 2259.715 ms
+Timing is off.
+>>> [CITY] Which schools need a speed camera or a raised crossing first?
+        school_zone        | speeding_readings | distinct_vehicles | max_kmh |                                   
+---------------------------+-------------------+-------------------+---------+-----------------------------------
+ Balfour School            |              8226 |                53 |    70.3 | █████████████████████████████████
+ Gordon Elementary School  |              4334 |                20 |    64.2 | █████████████████
+ Ramat Gan Hillel School   |              3402 |                40 |    72.1 | ██████████████
+ Atidim Tech High School   |              3086 |                20 |    70.0 | ████████████
+ Kiryat Ono Rimonim School |              2909 |                20 |    71.1 | ████████████
+(5 rows)
+
+>>> [CITY] Low-Emission Zone: how much diesel exhaust is released INSIDE the city center?
+ fleet_segment | vehicles_entering | vehicle_hours_inside | diesel_liters_inside | tailpipe_co2_tons | co2_tons_per_year 
+---------------+-------------------+----------------------+----------------------+-------------------+-------------------
+ Autonomous EV |                82 |                23546 |                      |                   |                  
+ Human Diesel  |                75 |                20555 |               133689 |             358.3 |              2906
+ Human EV      |                85 |                29092 |                      |                   |                  
+(3 rows)
+
+>>> [OPS] Route adherence: is every vehicle on its assigned line?   Two-step pattern for IoT scale:
+>>>       1) planar GEOMETRY distance of ALL fixes to their LINESTRING (fast filter)  2) exact meters on the WGS-84 spheroid
+>>>       (GEOGRAPHY) for the suspects only.  Episodes are sessionized with CONDITIONAL_TRUE_EVENT (new episode after a 10 min gap).
+Timing is on.
+  plate   | drive_mode | line |  left_route_at   | minutes_off_route | max_deviation_m |           action           
+----------+------------+------+------------------+-------------------+-----------------+----------------------------
+ TLV-1293 | HUMAN      | 25   | 2026-09-10 14:05 |                24 |             654 | ALERT: unauthorized detour
+ TLV-1138 | HUMAN      | 40   | 2026-09-12 14:08 |                28 |             887 | ALERT: unauthorized detour
+ TLV-1207 | HUMAN      | 10   | 2026-09-15 14:08 |                27 |             514 | ALERT: unauthorized detour
+(3 rows)
+
+Time: First fetch (3 rows): 24192.754 ms. All rows formatted: 24192.808 ms
+Timing is off.
+>>> [CITY] Harsh-braking black spots: GPS fixes binned with ST_GeoHash (~150 m cells), named by the nearest geofence.
+ geohash |   lat    |   lon    | harsh_brakes | by_humans | by_av |       nearest_landmark        | meters_away |                                      
+---------+----------+----------+--------------+-----------+-------+-------------------------------+-------------+--------------------------------------
+ sv8wrm2 | 32.06560 | 34.77223 |          897 |       876 |    21 | Balfour School                |         128 | ████████████████████████████████████
+ sv8wrm0 | 32.06437 | 34.77204 |          774 |       766 |     8 | Allenby - Rothschild Junction |          42 | ███████████████████████████████
+ sv8wrwy | 32.07397 | 34.79176 |          606 |       598 |     8 | Azrieli / Ayalon Interchange  |          64 | ████████████████████████
+ sv8wrhz | 32.06294 | 34.77094 |          601 |       586 |    15 | Allenby - Rothschild Junction |         155 | ████████████████████████
+ sv8wrxn | 32.07521 | 34.79174 |          579 |       574 |     5 | Azrieli / Ayalon Interchange  |          82 | ███████████████████████
+ sv8wrww | 32.07261 | 34.79131 |          380 |       378 |     2 | Azrieli / Ayalon Interchange  |         220 | ███████████████
+ sv8wrxq | 32.07642 | 34.79117 |          331 |       327 |     4 | Azrieli / Ayalon Interchange  |         227 | █████████████
+ sv8wrxp | 32.07541 | 34.79283 |          328 |       322 |     6 | Azrieli / Ayalon Interchange  |         128 | █████████████
+(8 rows)
+
+>>> [OEM] Where does the self-driving stack hand control back to the safety operator?  (disengagements by geofence)
+           location            | disengagements | av_km_driven_there | km_per_disengagement |                                                 
+-------------------------------+----------------+--------------------+----------------------+-------------------------------------------------
+ (open road - everywhere else) |           1185 |            1011267 |                  853 | ███████████████████████████████████████████████
+ Allenby - Rothschild Junction |            431 |              15879 |                   37 | █████████████████
+ Azrieli / Ayalon Interchange  |            347 |              13549 |                   39 | ██████████████
+ Mesubim Interchange           |            158 |               6704 |                   42 | ██████
+(4 rows)
+
+>>>       Three junctions = a sliver of the network, yet a large share of all disengagements: that is where to
+>>>       retrain perception / planning - and where the city should repaint lanes and retime signals.
+
+ ACT 3 | AUTONOMOUS vs. HUMAN DRIVERS - SAME LINES, SAME TIMETABLE, SAME WEATHER     
+>>> First a KPI mart: one row per vehicle per day, straight from the raw events (energy integrated over the real
+>>> time between messages). It feeds the scorecards below AND is the feature store for the ML act.
+Timing is on.
+CREATE TABLE
+Time: First fetch (0 rows): 2115.524 ms. All rows formatted: 2115.569 ms
+Timing is off.
+ vehicle_days | vehicles |  total_km  
+--------------+----------+------------
+   14,361     |      320 |  3,428,235
+(1 row)
+
+>>> [OPS] [OEM] The safety scorecard.  Events per 100 km so that every segment is judged on equal terms.
+CREATE TABLE
+ fleet_segment | vehicles | km_driven  | harsh brakes/100km | harsh accels/100km | speeding % | jerkiness | incidents | per 100k km | collisions/100k km 
+---------------+----------+------------+--------------------+--------------------+------------+-----------+-----------+-------------+--------------------
+ Autonomous EV |      100 |  1,088,486 |               0.15 |               0.02 |       0.00 |     0.479 |        14 |        1.29 |               0.09
+ Human Diesel  |      100 |  1,063,396 |               1.78 |               0.73 |       0.96 |     0.902 |       154 |       14.48 |               3.86
+ Human EV      |      120 |  1,276,353 |               1.84 |               0.75 |       0.92 |     0.913 |       208 |       16.30 |               3.68
+(3 rows)
+
+>>> Safety score 0-100 per vehicle (100 = flawless):  100 - 9 x harsh brakes/100km - 6 x harsh accels/100km - 2.5 x speeding%
+CREATE TABLE
+ fleet_segment | vehicles | worst | average | best | spread |          average safety score           
+---------------+----------+-------+---------+------+--------+-----------------------------------------
+ Autonomous EV |      100 |  97.4 |    98.5 | 99.3 |    0.4 | ███████████████████████████████████████
+ Human Diesel  |      100 |  45.9 |    76.9 | 95.1 |   13.0 | ███████████████████████████████
+ Human EV      |      120 |  43.0 |    76.3 | 93.8 |   12.6 | ███████████████████████████████
+(3 rows)
+
+>>>       The AV stack is not only better on average - it is CONSISTENT: every autonomous bus drives like the best human.
+>>> [OPS] Driver coaching list: the 5 best and the 5 riskiest human drivers
+   list   |  driver  |  plate   | line | harsh brakes /100km | speeding % | score |                          
+----------+----------+----------+------+---------------------+------------+-------+--------------------------
+ TOP 5    | DRV-5174 | TLV-1174 | 40   |                0.43 |       0.07 |  95.1 | ████████████████████████
+ TOP 5    | DRV-5239 | TLV-1239 | 100  |                0.43 |       0.17 |  94.1 | ████████████████████████
+ TOP 5    | DRV-5055 | TLV-1055 | 60   |                0.47 |       0.24 |  93.8 | ███████████████████████
+ TOP 5    | DRV-5297 | TLV-1297 | 66   |                0.49 |       0.19 |  93.7 | ███████████████████████
+ TOP 5    | DRV-5311 | TLV-1311 | 100  |                0.49 |       0.26 |  93.4 | ███████████████████████
+ BOTTOM 5 | DRV-5014 | TLV-1014 | 5    |                4.48 |       1.41 |  47.7 | ████████████
+ BOTTOM 5 | DRV-5217 | TLV-1217 | 4    |                4.21 |       1.76 |  47.6 | ████████████
+ BOTTOM 5 | DRV-5206 | TLV-1206 | 5    |                4.78 |       1.43 |  45.9 | ███████████
+ BOTTOM 5 | DRV-5134 | TLV-1134 | 5    |                4.64 |       1.55 |  44.8 | ███████████
+ BOTTOM 5 | DRV-5313 | TLV-1313 | 4    |                4.91 |       1.40 |  43.0 | ███████████
+(10 rows)
+
+>>> [OPS] Does bad weather change the picture?  Harsh brakes per 100 km, dry vs. rain:
+ drive_mode | dry_days | rainy_days | rain_penalty 
+------------+----------+------------+--------------
+ AUTONOMOUS |     0.15 |       0.18 | +25 %
+ HUMAN      |     1.67 |       2.39 | +44 %
+(2 rows)
+
+>>> [911] [OPS] Event-series PATTERN MATCHING (Vertica MATCH clause): the classic close-call signature
+>>>       "speeding for one or more readings, immediately followed by a harsh brake" - found across 13 million events:
+Timing is on.
+ drive_mode | vehicles_involved | close_call_patterns | max_speed_before_brake | hardest_brake_ms2 
+------------+-------------------+---------------------+------------------------+-------------------
+ HUMAN      |                18 |                  36 |                   76.7 |             -5.54
+(1 row)
+
+Time: First fetch (1 row): 4418.074 ms. All rows formatted: 4418.149 ms
+Timing is off.
+
+ ACT 4 | ENERGY - SMOOTH DRIVING IS CHEAP DRIVING                                     
+>>> [OPS] [OEM] Energy per km.  Assumptions: electricity 0.14 $/kWh, diesel 1.85 $/l, grid 0.45 kg CO2/kWh, diesel 2.68 kg CO2/l
+ fleet_segment | net kWh/km | energy recovered by regen % | l/100km | $ per 100 km | kg CO2 per km | g CO2 per passenger-km |             cost              
+---------------+------------+-----------------------------+---------+--------------+---------------+------------------------+-------------------------------
+ Autonomous EV |      0.973 |                        22.6 |         |        13.62 |         0.438 |                   14.2 | █████
+ Human EV      |      1.159 |                        20.6 |         |        16.23 |         0.522 |                   16.7 | █████
+ Human Diesel  |            |                             |    46.2 |        85.51 |         1.239 |                   39.7 | █████████████████████████████
+(3 rows)
+
+>>> [OPS] Inside the human EV group: energy use by safety-score quartile - the coaching business case
+ safety_quartile | drivers | score_range | kWh/km | harsh brakes /100km |                                  
+-----------------+---------+-------------+--------+---------------------+----------------------------------
+ Q1              |      30 | 87 - 94     |  1.029 |                0.73 | ██████████████████████████
+ Q2              |      30 | 78 - 87     |  1.118 |                1.34 | ████████████████████████████
+ Q3              |      30 | 68 - 78     |  1.189 |                2.05 | ██████████████████████████████
+ Q4              |      30 | 43 - 68     |  1.261 |                3.32 | ████████████████████████████████
+(4 rows)
+
+>>> [OEM] EV consumption and real-world range vs. ambient temperature (HVAC load) - WIDTH_BUCKET over vehicle-days.
+>>>       Measured on the autonomous buses only: their driving style is constant, so the temperature effect is isolated.
+  ambient   | vehicle_days | kWh/km | usable range km |                            
+------------+--------------+--------+-----------------+----------------------------
+ 10 to 15 C |         1000 |  1.003 |             431 | █████████████████████████
+ 15 to 20 C |          998 |  0.920 |             470 | ███████████████████████
+ 20 to 25 C |          799 |  0.916 |             472 | ███████████████████████
+ 25 to 30 C |         1002 |  0.993 |             435 | █████████████████████████
+ 30 to 35 C |          697 |  1.043 |             414 | ██████████████████████████
+(5 rows)
+
+>>> [OPS] Charging sessions detected from the state-of-charge signal (CONDITIONAL_TRUE_EVENT), range anxiety per segment:
+Timing is on.
+ fleet_segment | charge_cycles | avg_km_per_cycle | avg % used | lowest arrival % | arrivals below 15% | projected km on 90% of the pack 
+---------------+---------------+------------------+------------+------------------+--------------------+---------------------------------
+ Autonomous EV |          4496 |              242 |       47.7 |             22.4 |                  0 |                             457
+ Human EV      |          5375 |              238 |       49.6 |              0.5 |                103 |                             432
+(2 rows)
+
+Time: First fetch (2 rows): 1357.376 ms. All rows formatted: 1357.435 ms
+Timing is off.
+>>> [OPS] [CITY] Diesel burned while standing still (stops, red lights, terminals) - an EV uses almost nothing there
+ idle_liters_45_days | % of all diesel | idle_cost_per_year | idle_co2_tons_per_year 
+---------------------+-----------------+--------------------+------------------------
+  108,287            |            22.0 | $ 1,624,907        |                   2354
+(1 row)
+
+
+ ACT 5 | MACHINE LEARNING INSIDE THE DATABASE - THE DATA NEVER LEAVES VERTICA         
+>>> 5.1 [OPS] Unsupervised: K-MEANS discovers driving styles.  The algorithm is NOT told which buses are autonomous.
+ normalize_fit 
+---------------
+ Success
+
+(1 row)
+
+Timing is on.
+           kmeans           
+----------------------------
+ Finished in 11 iterations
+
+(1 row)
+
+Time: First fetch (1 row): 234.728 ms. All rows formatted: 234.779 ms
+Timing is off.
+CREATE TABLE
+ discovered_style | vehicles | autonomous | human | harsh brakes/100km | speeding % | jerkiness | safety_score |                               
+------------------+----------+------------+-------+--------------------+------------+-----------+--------------+-------------------------------
+ A  smooth        |      145 |        100 |    45 |               0.33 |       0.09 |     0.527 |         96.2 | █████████████████████████████
+ B  average       |      106 |          0 |   106 |               1.47 |       0.79 |     0.876 |         80.9 | █████████████████████
+ C  aggressive    |       69 |          0 |    69 |               3.11 |       1.68 |     1.137 |         60.6 | ██████████████
+(3 rows)
+
+>>>     Every autonomous bus lands in the smooth cluster - next to the best human drivers. Cluster C is the coaching list.
+
+>>> 5.2 [OPS] [OEM] Supervised: PREDICTIVE MAINTENANCE.  Will this vehicle break down within the next 7 days?
+>>>     Feature store = the vehicle-day mart + SQL window functions: each sensor vs. the SAME vehicle 4-14 days earlier.
+CREATE TABLE
+>>>     Train only on days whose 7-day outcome is already known; hold out 30% of the VEHICLES (not rows) for an honest test.
+CREATE VIEW
+CREATE VIEW
+CREATE VIEW
+ dataset | vehicle_days | vehicles | positives (fails within 7d) 
+---------+--------------+----------+-----------------------------
+ train   |         6612 |      221 |                         182
+ test    |         2962 |       99 |                          73
+(2 rows)
+
+Timing is on.
+ rf_classifier 
+---------------
+ Finished
+(1 row)
+
+Time: First fetch (1 row): 598.509 ms. All rows formatted: 598.581 ms
+Timing is off.
+CREATE TABLE
+>>>     Model quality on vehicles it has never seen (ROC function):
+ threshold | false_positive_rate | recall (true positive rate) |  AUC   |               recall               
+-----------+---------------------+-----------------------------+--------+------------------------------------
+       0.1 |              0.0059 |                      0.8493 |        | ██████████████████████████████████
+       0.2 |              0.0052 |                      0.7534 |        | ██████████████████████████████
+       0.3 |              0.0038 |                      0.7397 |        | ██████████████████████████████
+       0.4 |              0.0024 |                      0.7397 |        | ██████████████████████████████
+       0.5 |              0.0017 |                      0.7397 |        | ██████████████████████████████
+       0.6 |              0.0007 |                      0.7260 |        | █████████████████████████████
+       0.7 |              0.0007 |                      0.6849 |        | ███████████████████████████
+       0.8 |              0.0003 |                      0.6438 |        | ██████████████████████████
+       0.9 |              0.0000 |                      0.6301 |        | █████████████████████████
+         1 |              0.0000 |                      0.0000 | 0.9268 | 
+(10 rows)
+
+>>>     Confusion matrix at the alert threshold 0.40:
+ caught (TP) | missed (FN) | false alarm (FP) | quiet and healthy (TN) | precision % | recall % 
+-------------+-------------+------------------+------------------------+-------------+----------
+          54 |          19 |                7 |                   2882 |        88.5 |     74.0
+(1 row)
+
+>>>     The operational view - per BREAKDOWN in the test fleet: was there an alert before it happened, and how early?
+ component  | breakdowns | alerted in advance | avg_days_of_warning 
+------------+------------+--------------------+---------------------
+ DRIVETRAIN |          4 |                  3 |                 4.0
+ ELECTRICAL |          1 |                  0 |                    
+ TIRE       |          6 |                  6 |                 6.5
+(3 rows)
+
+>>>     Wear-type faults announce themselves days ahead; sudden ELECTRICAL faults carry no precursor in these sensors - an honest limit.
+>>>     What did the forest learn?  (RF_PREDICTOR_IMPORTANCE)
+  predictor_name  | importance |                                                 
+------------------+------------+-------------------------------------------------
+ psi_trend_2d     |     0.4653 | ███████████████████████████████████████████████
+ vib_trend_2d     |     0.1959 | ████████████████████
+ temp_vs_baseline |     0.1314 | █████████████
+ temp_trend_2d    |     0.0970 | ██████████
+ vib_vs_baseline  |     0.0375 | ████
+ max_motor_temp   |     0.0313 | ███
+ hb_100km         |     0.0115 | █
+ avg_out_temp     |     0.0109 | █
+ psi_vs_baseline  |     0.0093 | █
+ min_psi          |     0.0068 | █
+ max_vib          |     0.0032 | 
+(11 rows)
+
+>>> 5.3 [OPS] Score TODAY and turn it into work orders - which bus, which component, which depot, how far away.
+>>>     (+/- columns = todays sensor level minus the same vehicle 4-14 days ago)
+CREATE TABLE
+  plate   | fleet_segment | line | risk % |     suspected_fault      | vib +/- g | temp +/- C | psi +/- |          depot           | km to depot |    risk    
+----------+---------------+------+--------+--------------------------+-----------+------------+---------+--------------------------+-------------+------------
+ TLV-1123 | Human Diesel  | 10   |    100 | TIRE: slow leak          |     0.008 |       -2.0 |   -10.9 | Depot North (Reading)    |         3.4 | ██████████
+ TLV-1150 | Human EV      | 40   |    100 | TIRE: slow leak          |     0.015 |        1.7 |    -4.1 | Depot North (Reading)    |        10.7 | ██████████
+ TLV-1215 | Human EV      | 100  |    100 | COOLING: overheating     |    -0.012 |        6.6 |     1.7 | Depot East (Petah Tikva) |         4.3 | ██████████
+ TLV-1237 | Human Diesel  | 66   |    100 | DRIVETRAIN: bearing wear |     0.194 |        2.6 |     1.2 | Depot North (Reading)    |         4.0 | ██████████
+ TLV-1290 | Autonomous EV | 5    |    100 | TIRE: slow leak          |    -0.002 |        1.8 |    -6.2 | Depot East (Petah Tikva) |         8.7 | ██████████
+ TLV-1233 | Human EV      | 25   |     98 | TIRE: slow leak          |     0.015 |        1.6 |    -4.7 | Depot East (Petah Tikva) |        11.8 | ██████████
+ TLV-1133 | Human EV      | 4    |     81 | DRIVETRAIN: bearing wear |     0.067 |        3.3 |     1.8 | Depot South (Holon)      |         5.1 | ████████
+(7 rows)
+
+>>>     Reality check against the hidden failure schedule of the simulator (the model has never seen it):
+                   outcome                   |  plate   | risk % | hidden_fault | breaks_down 
+---------------------------------------------+----------+--------+--------------+-------------
+ 1. flagged - and it really is about to fail | TLV-1290 |    100 | tire         | in 4 days
+ 1. flagged - and it really is about to fail | TLV-1123 |    100 | tire         | in 2 days
+ 1. flagged - and it really is about to fail | TLV-1150 |    100 | tire         | in 5 days
+ 1. flagged - and it really is about to fail | TLV-1215 |    100 | cooling      | in 5 days
+ 1. flagged - and it really is about to fail | TLV-1237 |    100 | drivetrain   | in 2 days
+ 1. flagged - and it really is about to fail | TLV-1233 |     98 | tire         | in 5 days
+ 1. flagged - and it really is about to fail | TLV-1133 |     81 | drivetrain   | in 5 days
+ 3. missed                                   | TLV-1092 |      9 | drivetrain   | in 4 days
+ 3. missed                                   | TLV-1159 |      2 | drivetrain   | in 7 days
+(9 rows)
+
+>>>     The business case: an unplanned breakdown = repair + towing (1,200 $) + 36 h of lost service (95 $/h); a planned fix ~ 40% of the repair.
+>>>     Avoidable = wear-type faults only (no ELECTRICAL), and only 80% of those - in line with the advance-alert rate measured above.
+ breakdowns_in_45_days | avg_cost_unplanned | avg_cost_planned | breakdown_cost_per_year | avoidable_per_year 
+-----------------------+--------------------+------------------+-------------------------+--------------------
+                    42 | $  12,788          | $   3,267        | $  4,356,502            | $  2,282,984
+(1 row)
+
+
+>>> 5.4 [OPS] [OEM] Unsupervised anomaly detection: ISOLATION FOREST - the unknown unknowns, no labels needed
+CREATE VIEW
+Timing is on.
+ iforest  
+----------
+ Finished
+(1 row)
+
+Time: First fetch (1 row): 259.940 ms. All rows formatted: 260.006 ms
+Timing is off.
+  plate   | fleet_segment |    day     | anomaly_score |                  why_is_it_odd                  
+----------+---------------+------------+---------------+-------------------------------------------------
+ TLV-1037 | Human EV      | 2026-09-15 |         0.880 | short day: 120 km (breakdown / out of service?)
+ TLV-1252 | Human Diesel  | 2026-09-15 |         0.880 | short day: 85 km (breakdown / out of service?)
+ TLV-1298 | Human EV      | 2026-09-14 |         0.873 | vibration +0.204 g above baseline
+ TLV-1237 | Human Diesel  | 2026-09-16 |         0.871 | vibration +0.194 g above baseline
+ TLV-1252 | Human Diesel  | 2026-09-14 |         0.871 | vibration +0.216 g above baseline
+ TLV-1298 | Human EV      | 2026-09-15 |         0.812 | vibration +0.264 g above baseline
+ TLV-1037 | Human EV      | 2026-09-14 |         0.811 | vibration +0.218 g above baseline
+ TLV-1044 | Human Diesel  | 2026-09-16 |         0.670 | unusual combination of readings
+ TLV-1072 | Human EV      | 2026-09-15 |         0.663 | unusual combination of readings
+ TLV-1072 | Human EV      | 2026-09-14 |         0.661 | unusual combination of readings
+(10 rows)
+
+
+>>> 5.5 [OEM] [OPS] Explainable model: LINEAR REGRESSION of energy use (kWh/km) per EV per day - what really drives consumption?
+CREATE VIEW
+        linear_reg         
+---------------------------
+ Finished in 1 iterations
+
+(1 row)
+
+    predictor     | kWh/km per unit | std_err | t_value | significance 
+------------------+-----------------+---------+---------+--------------
+ Intercept        |          0.4982 |  0.0046 |   109.0 | ***
+ jerkiness        |          0.4930 |  0.0052 |    95.0 | ***
+ hb_100km         |         -0.0014 |  0.0007 |    -2.0 | *
+ degrees_from_21c |          0.0175 |  0.0002 |    90.6 | ***
+ avg_passengers   |          0.0031 |  0.0001 |    44.1 | ***
+ is_express       |          0.0407 |  0.0017 |    23.3 | ***
+ is_autonomous    |          0.0295 |  0.0021 |    14.4 | ***
+(7 rows)
+
+ r_squared |                     comment                     
+-----------+-------------------------------------------------
+     0.861 | Of 9860 rows, 9860 were used and 0 were ignored
+(1 row)
+
+>>>     Read it like this: smoothness (jerkiness) is the big lever.  Once driving style is in the model, the "is_autonomous" flag adds
+>>>     little - the AV advantage IS its smoothness, which means human drivers can be coached towards it.
+
+>>>     Every model is a first-class database object - versionable, securable, exportable (PMML / TensorFlow import-export):
+     model_name     |    model_type     |     created      | size_kb 
+--------------------+-------------------+------------------+---------
+ fleet_style_norm   | NORMALIZE_FIT     | 2026-09-17 17:31 |       1
+ fleet_style_kmeans | KMEANS            | 2026-09-17 17:31 |       2
+ fleet_pdm_rf       | RF_CLASSIFIER     | 2026-09-17 17:31 |     122
+ fleet_iforest      | IFOREST           | 2026-09-17 17:31 |     463
+ fleet_energy_lr    | LINEAR_REGRESSION | 2026-09-17 17:31 |       2
+(5 rows)
+
+
+ ACT 6 | EMERGENCY RESPONSE - SECONDS MATTER                                          
+>>> [911] Scenario: 17:42 on the last day - multi-vehicle collision on Ibn Gabirol St. near Rabin Square (34.7812 E, 32.0815 N).
+CREATE TABLE
+>>> 1) Closest trauma centers (ST_Distance on the spheroid):
+         hospital         | km_away | eta min (40 km/h, detour factor 1.4) 
+--------------------------+---------+--------------------------------------
+ Ichilov Medical Center   |    0.79 |                                    2
+ Wolfson Medical Center   |    5.35 |                                   12
+ Sheba Medical Center     |    7.13 |                                   15
+ Beilinson Medical Center |    7.95 |                                   17
+(4 rows)
+
+>>> 2) Fleet vehicles within 400 m at 17:42 (STV_DWithin) - rolling cameras and sensors that are already on scene:
+CREATE TABLE
+  plate   | drive_mode | line | last_fix | pax | meters_from_incident |                        action                        
+----------+------------+------+----------+-----+----------------------+------------------------------------------------------
+ TLV-1266 | HUMAN      | 5    | 17:41:19 |  66 |                   39 | radio driver; hold at next stop
+ TLV-1098 | AUTONOMOUS | 5    | 17:41:17 |  28 |                   54 | stream 360 camera + lidar to dispatch; hold position
+ TLV-1110 | HUMAN      | 5    | 17:41:07 |  45 |                   70 | radio driver; hold at next stop
+ TLV-1086 | HUMAN      | 5    | 17:41:00 |  70 |                   72 | radio driver; hold at next stop
+ TLV-1254 | HUMAN      | 5    | 17:41:09 |  75 |                   92 | radio driver; hold at next stop
+ TLV-1038 | HUMAN      | 5    | 17:41:14 |  75 |                  206 | radio driver; hold at next stop
+ TLV-1280 | HUMAN      | 18   | 17:41:04 |  33 |                  301 | radio driver; hold at next stop
+ TLV-1160 | AUTONOMOUS | 18   | 17:41:19 |  66 |                  306 | stream 360 camera + lidar to dispatch; hold position
+(8 rows)
+
+>>> 3) Green corridor: the ambulance drives Ichilov -> incident.  Which buses are within 200 m of that path right now?
+ drive_mode | vehicles_in_corridor | passengers_on_board |                          how_the_corridor_is_cleared                           
+------------+----------------------+---------------------+--------------------------------------------------------------------------------
+ AUTONOMOUS |                    4 |                 200 | V2X command: pull over and yield - executed in seconds, confirmed by telemetry
+ HUMAN      |                    5 |                 289 | voice radio to each driver - depends on human reaction
+(2 rows)
+
+>>> 4) [CITY] Which bus lines cross the closure and must be diverted?  (ST_Intersects: LINESTRING x buffered POINT)
+ line |               route_name                | km_inside_closure | buses_on_the_line_now | passengers_affected 
+------+-----------------------------------------+-------------------+-----------------------+---------------------
+ 5    | Rothschild - Ibn Gabirol - Savidor      |              0.77 |                    27 |                1602
+ 18   | Bat Yam - Jaffa - City Center - Savidor |              0.75 |                    27 |                1489
+(2 rows)
+
+
+ ACT 7 | EXECUTIVE SUMMARY                                                            
+CREATE TABLE
+>>> 45 days, same lines, same timetable, same weather:
+                  kpi                  | Autonomous EV | Human EV | Human Diesel 
+---------------------------------------+---------------+----------+--------------
+ Safety score (0-100)                  |   98.5        |   76.3   |   76.9
+ Harsh brakes per 100 km               |    0.15       |    1.84  |    1.78
+ Time above speed limit (%)            |    0.00       |    0.92  |    0.96
+ Incidents per 100,000 km              |    1.29       |   16.30  |   14.48
+ Collisions per 100,000 km             |    0.09       |    3.68  |    3.86
+ Energy: kWh per km                    |    0.973      |    1.159 |       -
+ Energy: liters per 100 km             |       -       |       -  |   46.2
+ Energy cost, $ per 100 km             |   13.62       |   16.23  |   85.51
+ CO2, kg per km                        |    0.438      |    0.522 |    1.239
+ Unplanned breakdowns per 100 vehicles |    4.0        |   17.5   |   17.0
+(10 rows)
+
+>>> What is it worth?  Annualized value if the human-driven segments performed like the autonomous EV segment
+>>> (collision = 18,500 $ average claim; breakdown savings come from the predictive-maintenance model, fleet-wide):
+ segment upgraded to AV-EV level | km_per_year | energy_saving | collisions_avoided | collision_cost_avoided | co2_tons_avoided 
+---------------------------------+-------------+---------------+--------------------+------------------------+------------------
+ Human Diesel                    |   8,625,325 | $  6,200,921  |                325 | $  6,005,681           |    6,909
+ Human EV                        |  10,352,638 | $    269,743  |                372 | $  6,876,657           |      867
+(2 rows)
+
+
+>>> One platform did all of it: IoT-scale load, time series, geospatial, pattern matching and machine learning -
+>>> in SQL, in place, in seconds.   Next: open the VerticaPy notebook for the visual story (03_smart_fleet_verticapy.ipynb).
+
+ End of part 2 

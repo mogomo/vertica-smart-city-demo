@@ -1,0 +1,199 @@
+ VERTICA SMART FLEET DEMO | part 1: build the digital twin of a city bus fleet 
+   Tel Aviv metropolitan area - 12 bus lines - autonomous (L4) e-buses, human-driven e-buses, human-driven diesel
+
+           vertica_version           
+-------------------------------------
+ Vertica Analytic Database v26.2.0-1
+(1 row)
+
+DROP SCHEMA
+CREATE SCHEMA
+SET
+CREATE TABLE
+ OUTPUT 
+--------
+ 100000
+(1 row)
+
+COMMIT
+
+ 1.1  Bus lines as real GEOMETRY / GEOGRAPHY objects (WKT LINESTRINGs)            
+CREATE TABLE
+ OUTPUT 
+--------
+     12
+(1 row)
+
+ OUTPUT 
+--------
+     12
+(1 row)
+
+ OUTPUT 
+--------
+     12
+(1 row)
+
+COMMIT
+ line |                  route_name                   | service_type | waypoints | ST_Length (km) |            
+------+-----------------------------------------------+--------------+-----------+----------------+------------
+ 1    | Coastal: Jaffa - Port - University            | URBAN        |         8 |           8.38 | ██████
+ 4    | Allenby - Dizengoff - Port                    | URBAN        |         8 |           4.95 | ███
+ 5    | Rothschild - Ibn Gabirol - Savidor            | URBAN        |         6 |           5.65 | ████
+ 10   | Crosstown: Jaffa - Azrieli - Petah Tikva      | URBAN        |         9 |          14.66 | ██████████
+ 18   | Bat Yam - Jaffa - City Center - Savidor       | URBAN        |         8 |           9.71 | ██████
+ 25   | Holon - Azrieli - Ichilov - University        | URBAN        |         8 |          11.47 | ████████
+ 40   | Airport Express: Savidor - Ben Gurion T3      | EXPRESS      |         6 |          14.25 | ██████████
+ 60   | Hospital Link: Ichilov - Sheba - Kiryat Ono   | URBAN        |         6 |           8.88 | ██████
+ 90   | North Express: Savidor - Glilot - Herzliya    | EXPRESS      |         5 |          12.30 | ████████
+ 66   | Ramat Gan - Givatayim - Bar Ilan - Bnei Brak  | URBAN        |         5 |           9.33 | ██████
+ 72   | South Ring: Wolfson - Holon - Azor - Sheba    | URBAN        |         6 |          11.70 | ████████
+ 100  | Innovation Shuttle: University - Atidim - BBC | URBAN        |         6 |           6.23 | ████
+(12 rows)
+
+CREATE TABLE
+ OUTPUT 
+--------
+   2353
+(1 row)
+
+COMMIT
+
+ 1.2  Geofences: school zones, hospital quiet zones, low-emission zone, depots     
+CREATE TABLE
+CREATE TABLE
+ OUTPUT 
+--------
+     20
+(1 row)
+
+ OUTPUT 
+--------
+     20
+(1 row)
+
+ OUTPUT 
+--------
+      1
+(1 row)
+
+COMMIT
+CREATE TABLE
+ OUTPUT 
+--------
+   2353
+(1 row)
+
+DROP TABLE
+    zone_type     | zones | limit km/h | ST_Area (km2) 
+------------------+-------+------------+---------------
+ COMPLEX_JUNCTION |     3 |            |          0.58
+ DEPOT            |     3 |         20 |          0.64
+ HOSPITAL         |     4 |         40 |          1.34
+ LOW_EMISSION     |     1 |            |         13.01
+ SCHOOL           |    10 |         30 |          1.70
+(5 rows)
+
+CREATE TABLE
+ OUTPUT 
+--------
+      7
+(1 row)
+
+ OUTPUT 
+--------
+      5
+(1 row)
+
+COMMIT
+
+ 1.3  The fleet: autonomous e-buses, human-driven e-buses, human-driven diesel     
+CREATE TABLE
+ OUTPUT 
+--------
+    320
+(1 row)
+
+COMMIT
+ fleet_segment | drive_mode | powertrain |           model           | vehicles | lines_served |                                
+---------------+------------+------------+---------------------------+----------+--------------+--------------------------------
+ Autonomous EV | AUTONOMOUS | EV         | Helios A12 AutoPilot (L4) |      100 |           12 | █████████████████████████
+ Human Diesel  | HUMAN      | DIESEL     | Magnus D12 Euro VI        |      100 |           12 | █████████████████████████
+ Human EV      | HUMAN      | EV         | Voltera E-City 12         |      120 |           12 | ██████████████████████████████
+(3 rows)
+
+CREATE TABLE
+CREATE TABLE
+CREATE TABLE
+CREATE TABLE
+ OUTPUT 
+--------
+   1080
+(1 row)
+
+COMMIT
+
+ 1.4  IoT telemetry: simulate the whole fleet INSIDE Vertica with one SQL statement 
+CREATE TABLE
+Generating 320 vehicles x 45 days, one event every 60 seconds (06:00-22:00 service) ...
+Timing is on.
+  OUTPUT  
+----------
+ 13354093
+(1 row)
+
+Time: First fetch (1 row): 105753.390 ms. All rows formatted: 105755.592 ms
+COMMIT
+Time: First fetch (0 rows): 4.367 ms. All rows formatted: 4.391 ms
+Timing is off.
+
+ 1.5  Operational systems of record: safety incidents and workshop log             
+CREATE TABLE
+ OUTPUT 
+--------
+    376
+(1 row)
+
+CREATE TABLE
+ OUTPUT 
+--------
+    362
+(1 row)
+
+COMMIT
+ analyze_statistics 
+--------------------
+                  0
+(1 row)
+
+ analyze_statistics 
+--------------------
+                  0
+(1 row)
+
+
+ 1.6  What did we just build?                                                      
+         table          |     rows     
+------------------------+--------------
+ telemetry (IoT events) |   13,354,093
+ vehicles               |          320
+ routes                 |           12
+ zones (geofences)      |           21
+ incidents              |          376
+ maintenance_log        |          362
+(6 rows)
+
+   first_event    |    last_event    | vehicles | days | max_odometer_km 
+------------------+------------------+----------+------+-----------------
+ 2026-08-03 06:00 | 2026-09-16 21:59 |      320 |   45 |  290,045
+(1 row)
+
+Columnar storage: sorted + encoded + compressed automatically - a big deal for never-ending IoT streams.
+(raw size = the same events written as a CSV file, measured on a 1% sample)
+     rows     | vertica_mb | raw_csv_mb | compression_ratio | bytes_per_event 
+--------------+------------+------------+-------------------+-----------------
+   13,354,093 |      342.4 |     1563.6 | 4.6 : 1           |            26.9
+(1 row)
+
+
+ Part 1 done.  Next:  vsql -f 02_smart_fleet_analytics.sql 
