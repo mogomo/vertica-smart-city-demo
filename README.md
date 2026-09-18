@@ -5,7 +5,7 @@
 A self-contained smart-city demo that simulates a city bus fleet *inside* Vertica and then answers one question with it:
 **what is an autonomous bus really worth — in safety, energy and uptime — compared with a human-driven one?**
 
-▶ **Watch the 4-minute film:** https://www.youtube.com/watch?v=VIDEO_ID
+▶ **Watch the 4-minute film:** [https://www.youtube.com/watch?v=VIDEO_ID](https://youtu.be/GW9GW5J3ZZU)
 
 | | |
 |---|---|
